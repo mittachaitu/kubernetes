@@ -53,6 +53,14 @@ const (
 	iscsiPluginName = "kubernetes.io/iscsi"
 )
 
+type iscsiTimeoutKey string
+
+type iscsiTimeout struct {
+	Name  iscsiTimeoutKey
+	Value string
+}
+type iscsiTimeouts []iscsiTimeout
+
 func (plugin *iscsiPlugin) Init(host volume.VolumeHost) error {
 	plugin.host = host
 	plugin.targetLocks = keymutex.NewHashed(0)
@@ -271,6 +279,7 @@ type iscsiDisk struct {
 	chap_discovery bool
 	chap_session   bool
 	secret         map[string]string
+	iscsiTimeouts  iscsiTimeouts
 	InitiatorName  string
 	plugin         *iscsiPlugin
 	// Utility interface that provides API calls to the provider to attach/detach disks.
@@ -506,6 +515,24 @@ func getISCSISecretNameAndNamespace(spec *volume.Spec, defaultSecretNamespace st
 	return "", "", fmt.Errorf("Spec does not reference an ISCSI volume type")
 }
 
+// updateFromPV will read iSCSI Timeout settings from Persistent Volume object
+func (iscsiTimeoKeyValues *iscsiTimeouts) updateFromPV(spec *volume.Spec) {
+	i := iscsiTimeout{}
+	keyValue := spec.PersistentVolume.Annotations["kubernetes.io/iscsiTimeout"]
+	if keyValue != "" {
+		pair := strings.Split(keyValue, "=")
+		if len(pair) == 2 {
+			i.Name = iscsiTimeoutKey(pair[0])
+			i.Value = pair[1]
+			*iscsiTimeoKeyValues = append(*iscsiTimeoKeyValues, i)
+		} else {
+			glog.Infof("iscsi timeout settings are not provided in proper format expecting as (\"key=value\")")
+		}
+	} else {
+		glog.Infof("iscsi Timeout settings are not provided")
+	}
+}
+
 func createISCSIDisk(spec *volume.Spec, podUID types.UID, plugin *iscsiPlugin, manager diskManager, secret map[string]string) (*iscsiDisk, error) {
 	tp, portals, iqn, lunStr, err := getISCSITargetInfo(spec)
 	if err != nil {
@@ -538,6 +565,10 @@ func createISCSIDisk(spec *volume.Spec, podUID types.UID, plugin *iscsiPlugin, m
 		return nil, err
 	}
 
+	var fetchiscsiTimeouts iscsiTimeouts
+	//Fetching iscsi timeout settings from PV object
+	(&fetchiscsiTimeouts).updateFromPV(spec)
+
 	return &iscsiDisk{
 		podUID:         podUID,
 		VolName:        spec.Name(),
@@ -548,9 +579,11 @@ func createISCSIDisk(spec *volume.Spec, podUID types.UID, plugin *iscsiPlugin, m
 		chap_discovery: chapDiscovery,
 		chap_session:   chapSession,
 		secret:         secret,
-		InitiatorName:  initiatorName,
-		manager:        manager,
-		plugin:         plugin}, nil
+		iscsiTimeouts:  fetchiscsiTimeouts,
+		//timeouts:       timeouts,
+		InitiatorName: initiatorName,
+		manager:       manager,
+		plugin:        plugin}, nil
 }
 
 func createSecretMap(spec *volume.Spec, plugin *iscsiPlugin, namespace string) (map[string]string, error) {
