@@ -514,6 +514,62 @@ func TestGetISCSICHAP(t *testing.T) {
 	}
 }
 
+func TestGetISCSITimeoutSettingInfo(t *testing.T) {
+	volAnnotations1 := make(map[string]string)
+	volAnnotations2 := make(map[string]string)
+	volAnnotations3 := make(map[string]string)
+	volAnnotations1["storage.alpha.kubernetes.io/iscsiTimeout"] = "node.session.timeo.replacement_timeout=300"
+	volAnnotations2["storage.alpha.kubernetes.io/iscsiTimeout"] = "node.session.timeo.replacement_timeout 300"
+	tests := []testcase{
+		{
+			name: "timeout settings",
+			spec: &volume.Spec{
+				PersistentVolume: &v1.PersistentVolume{
+					ObjectMeta: metav1.ObjectMeta{
+						Annotations: volAnnotations1,
+					},
+				},
+			},
+		},
+		{
+			name: "incorrect timeout settings",
+			spec: &volume.Spec{
+				PersistentVolume: &v1.PersistentVolume{
+					ObjectMeta: metav1.ObjectMeta{
+						Annotations: volAnnotations2,
+					},
+				},
+			},
+		},
+		{
+			name: "no timeout settings",
+			spec: &volume.Spec{
+				PersistentVolume: &v1.PersistentVolume{
+					ObjectMeta: metav1.ObjectMeta{
+						Annotations: volAnnotations3,
+					},
+				},
+			},
+		},
+	}
+	for _, testcase := range tests {
+		var fakeIscsiTimeouts iscsiTimeouts
+		fakeIscsiTimeouts = fakeIscsiTimeouts.getISCSITimeoutSettingInfo(testcase.spec)
+		switch testcase.name {
+		case "timeout settings":
+			if string(fakeIscsiTimeouts[0].Name) != "node.session.timeo.replacement_timeout" && fakeIscsiTimeouts[0].Value != "300" {
+				t.Errorf("%s failed: expected: setting = {%s %s} and got %v",
+					testcase.name, "node.session.timeo.replacement_timeout", "300",
+					fakeIscsiTimeouts[0])
+			}
+		default:
+			if fakeIscsiTimeouts != nil {
+				t.Errorf("%s failed expected %v and got %v", testcase.name, nil, fakeIscsiTimeouts[0])
+			}
+		}
+	}
+}
+
 func TestGetVolumeSpec(t *testing.T) {
 	path := "plugins/kubernetes.io/iscsi/volumeDevices/iface-default/127.0.0.1:3260-iqn.2014-12.server:storage.target01-lun-0"
 	spec, _ := getVolumeSpecFromGlobalMapPath("test", path)

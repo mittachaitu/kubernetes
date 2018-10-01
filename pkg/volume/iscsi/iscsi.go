@@ -53,6 +53,18 @@ const (
 	iscsiPluginName = "kubernetes.io/iscsi"
 )
 
+//iscsiTimeoutKey is used to update the iscsi Timeout setting i.e
+//(node.session.timeo.replacement_timeout) to keep volume in RW state during node down cases
+type iscsiTimeoutKey string
+type iscsiTimeout struct {
+	Name  iscsiTimeoutKey
+	Value string
+}
+type iscsiTimeouts []iscsiTimeout
+
+//iscsiAnnotationLblKey is used to read timeout setting and value from PV object
+const iscsiAnnotationLblKey = "storage.alpha.kubernetes.io/iscsiTimeout"
+
 func (plugin *iscsiPlugin) Init(host volume.VolumeHost) error {
 	plugin.host = host
 	plugin.targetLocks = keymutex.NewHashed(0)
@@ -271,6 +283,7 @@ type iscsiDisk struct {
 	chap_discovery bool
 	chap_session   bool
 	secret         map[string]string
+	iscsiTimeouts  iscsiTimeouts
 	InitiatorName  string
 	plugin         *iscsiPlugin
 	// Utility interface that provides API calls to the provider to attach/detach disks.
@@ -506,6 +519,26 @@ func getISCSISecretNameAndNamespace(spec *volume.Spec, defaultSecretNamespace st
 	return "", "", fmt.Errorf("Spec does not reference an ISCSI volume type")
 }
 
+// updateFromPV will read iSCSI Timeout settings from Persistent Volume object
+func (kvp iscsiTimeouts) getISCSITimeoutSettingInfo(spec *volume.Spec) iscsiTimeouts {
+	if spec.PersistentVolume != nil {
+		keyValue := spec.PersistentVolume.Annotations[iscsiAnnotationLblKey]
+		if keyValue != "" {
+			pair := strings.Split(keyValue, "=")
+			if len(pair) == 2 {
+				kvp = append(kvp, iscsiTimeout{iscsiTimeoutKey(pair[0]), pair[1]})
+			} else {
+				glog.Warningf("iscsi timeout setting is not provided in proper format expecting as (\"node.session.timeo.replacement_timeout=300\")")
+			}
+		} else {
+			glog.Infof("iscsi timeout setting is not provided: PersistentVolume.Annotations[\"storage.alpha.kubernetes.io/iscsiTimeout\"] is empty")
+		}
+	} else {
+		glog.Infof("iscsi timeout setting is not provided: PersistentVolume.Annotations[\"storage.alpha.kubernetes.io/iscsiTimeout\"] is empty")
+	}
+	return kvp
+}
+
 func createISCSIDisk(spec *volume.Spec, podUID types.UID, plugin *iscsiPlugin, manager diskManager, secret map[string]string) (*iscsiDisk, error) {
 	tp, portals, iqn, lunStr, err := getISCSITargetInfo(spec)
 	if err != nil {
@@ -538,6 +571,10 @@ func createISCSIDisk(spec *volume.Spec, podUID types.UID, plugin *iscsiPlugin, m
 		return nil, err
 	}
 
+	var iscsiTimeouts iscsiTimeouts
+	//Fetching iscsi timeout settings from PV object
+	iscsiTimeouts = iscsiTimeouts.getISCSITimeoutSettingInfo(spec)
+
 	return &iscsiDisk{
 		podUID:         podUID,
 		VolName:        spec.Name(),
@@ -548,6 +585,7 @@ func createISCSIDisk(spec *volume.Spec, podUID types.UID, plugin *iscsiPlugin, m
 		chap_discovery: chapDiscovery,
 		chap_session:   chapSession,
 		secret:         secret,
+		iscsiTimeouts:  iscsiTimeouts,
 		InitiatorName:  initiatorName,
 		manager:        manager,
 		plugin:         plugin}, nil
